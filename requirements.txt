@@ -1,0 +1,11 @@
+# CINEOS Media Runtime — API Server Dependencies
+#
+# The HTTP API server (api/) uses ONLY Python standard library modules:
+#   http.server, json, hashlib, uuid, datetime, threading, re, collections
+#
+# No additional pip dependencies are required.
+#
+# The existing ingest/transcode/proxy modules use pydantic, which is
+# required only if those modules are imported directly. The API server
+# does NOT import them — it maintains its own in-memory state that
+# matches the TypeScript contract interfaces.
