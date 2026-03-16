@@ -9,6 +9,7 @@
  * - Get lineage for output
  */
 
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   OutputLineageTracker,
   RenderJobRef,
@@ -23,11 +24,6 @@ const store: Record<string, string> = {};
   clear: () => { for (const k in store) delete store[k]; },
 };
 
-function setup() {
-  (globalThis as any).localStorage.clear();
-  return new OutputLineageTracker();
-}
-
 const RENDER_JOB: RenderJobRef = {
   render_job_id: 'render-001',
   timeline_id: 'timeline-001',
@@ -35,109 +31,94 @@ const RENDER_JOB: RenderJobRef = {
   output_ref: 'output://file.mp4',
 };
 
-// --- Tests ---
+describe('OutputLineageTracker', () => {
+  let tracker: OutputLineageTracker;
 
-// Test 1: Build lineage chain
-(function test_buildLineage() {
-  const tracker = setup();
+  beforeEach(() => {
+    (globalThis as any).localStorage.clear();
+    tracker = new OutputLineageTracker();
+  });
 
-  const lineage = tracker.buildLineage(
-    RENDER_JOB,
-    ['editorial-decision-001'],
-    ['source-media-001'],
-  );
+  it('should build a lineage chain', () => {
+    const lineage = tracker.buildLineage(
+      RENDER_JOB,
+      ['editorial-decision-001'],
+      ['source-media-001'],
+    );
 
-  console.assert(lineage.lineage_id.length > 0, 'FAIL: lineage_id should be set');
-  console.assert(lineage.output_id === 'output://file.mp4', 'FAIL: output_id should match output_ref');
-  console.assert(lineage.output_type === 'render_output', 'FAIL: output_type should be render_output');
-  console.assert(lineage.source_chain.length === 5, 'FAIL: chain should have 5 entries');
-  console.assert(lineage.source_chain[0].entity_type === 'render_job', 'FAIL: first should be render_job');
-  console.assert(lineage.source_chain[1].entity_type === 'timeline_version', 'FAIL: second should be timeline_version');
-  console.assert(lineage.source_chain[2].entity_type === 'timeline', 'FAIL: third should be timeline');
-  console.assert(lineage.source_chain[3].entity_type === 'editorial_decision', 'FAIL: fourth should be editorial_decision');
-  console.assert(lineage.source_chain[4].entity_type === 'source_media', 'FAIL: fifth should be source_media');
-  console.log('PASS: test_buildLineage');
-})();
+    expect(lineage.lineage_id.length).toBeGreaterThan(0);
+    expect(lineage.output_id).toBe('output://file.mp4');
+    expect(lineage.output_type).toBe('render_output');
+    expect(lineage.source_chain.length).toBe(5);
+    expect(lineage.source_chain[0].entity_type).toBe('render_job');
+    expect(lineage.source_chain[1].entity_type).toBe('timeline_version');
+    expect(lineage.source_chain[2].entity_type).toBe('timeline');
+    expect(lineage.source_chain[3].entity_type).toBe('editorial_decision');
+    expect(lineage.source_chain[4].entity_type).toBe('source_media');
+  });
 
-// Test 2: Verify completeness — complete chain
-(function test_verifyCompleteness() {
-  const tracker = setup();
+  it('should verify completeness of a complete chain', () => {
+    const lineage = tracker.buildLineage(
+      RENDER_JOB,
+      ['editorial-decision-001'],
+      ['source-media-001'],
+    );
 
-  const lineage = tracker.buildLineage(
-    RENDER_JOB,
-    ['editorial-decision-001'],
-    ['source-media-001'],
-  );
+    const verified = tracker.verifyLineage(lineage.lineage_id);
+    expect(verified.complete).toBe(true);
+    expect(verified.verified_at).not.toBeNull();
+  });
 
-  const verified = tracker.verifyLineage(lineage.lineage_id);
-  console.assert(verified.complete === true, 'FAIL: chain should be complete');
-  console.assert(verified.verified_at !== null, 'FAIL: verified_at should be set');
-  console.log('PASS: test_verifyCompleteness');
-})();
+  it('should trace chain back to source media and editorial decisions', () => {
+    const lineage = tracker.buildLineage(
+      RENDER_JOB,
+      ['ed-001', 'ed-002'],
+      ['media-001', 'media-002', 'media-003'],
+    );
 
-// Test 3: Chain traces back to source media and editorial decisions
-(function test_chainTracesBack() {
-  const tracker = setup();
+    // Should include all editorial decisions
+    const editorialEntries = lineage.source_chain.filter(e => e.entity_type === 'editorial_decision');
+    expect(editorialEntries.length).toBe(2);
+    expect(editorialEntries[0].entity_id).toBe('ed-001');
+    expect(editorialEntries[1].entity_id).toBe('ed-002');
 
-  const lineage = tracker.buildLineage(
-    RENDER_JOB,
-    ['ed-001', 'ed-002'],
-    ['media-001', 'media-002', 'media-003'],
-  );
+    // Should include all source media
+    const mediaEntries = lineage.source_chain.filter(e => e.entity_type === 'source_media');
+    expect(mediaEntries.length).toBe(3);
+    expect(mediaEntries[0].relationship).toBe('sourced_from');
 
-  // Should include all editorial decisions
-  const editorialEntries = lineage.source_chain.filter(e => e.entity_type === 'editorial_decision');
-  console.assert(editorialEntries.length === 2, 'FAIL: should have 2 editorial decisions');
-  console.assert(editorialEntries[0].entity_id === 'ed-001', 'FAIL: first editorial ID mismatch');
-  console.assert(editorialEntries[1].entity_id === 'ed-002', 'FAIL: second editorial ID mismatch');
+    // Verify the chain links CDG entities
+    const decisionEntries = lineage.source_chain.filter(e => e.relationship === 'decided_by');
+    expect(decisionEntries.length).toBe(2);
+  });
 
-  // Should include all source media
-  const mediaEntries = lineage.source_chain.filter(e => e.entity_type === 'source_media');
-  console.assert(mediaEntries.length === 3, 'FAIL: should have 3 source media entries');
-  console.assert(mediaEntries[0].relationship === 'sourced_from', 'FAIL: relationship should be sourced_from');
+  it('should detect incomplete chains', () => {
+    // No editorial decisions or source media
+    const lineage = tracker.buildLineage(RENDER_JOB, [], []);
+    expect(lineage.complete).toBe(false);
 
-  // Verify the chain links CDG entities
-  const decisionEntries = lineage.source_chain.filter(e => e.relationship === 'decided_by');
-  console.assert(decisionEntries.length === 2, 'FAIL: should have 2 decided_by relationships');
-  console.log('PASS: test_chainTracesBack');
-})();
+    const verified = tracker.verifyLineage(lineage.lineage_id);
+    expect(verified.complete).toBe(false);
 
-// Test 4: Incomplete chain detection
-(function test_incompleteChain() {
-  const tracker = setup();
+    // Only editorial, no source
+    const lineage2 = tracker.buildLineage(RENDER_JOB, ['ed-001'], []);
+    expect(lineage2.complete).toBe(false);
+  });
 
-  // No editorial decisions or source media
-  const lineage = tracker.buildLineage(RENDER_JOB, [], []);
-  console.assert(lineage.complete === false, 'FAIL: chain without editorial/source should be incomplete');
+  it('should get lineage for output', () => {
+    const lineage = tracker.buildLineage(
+      RENDER_JOB,
+      ['ed-001'],
+      ['media-001'],
+    );
 
-  const verified = tracker.verifyLineage(lineage.lineage_id);
-  console.assert(verified.complete === false, 'FAIL: verification should confirm incomplete');
+    const retrieved = tracker.getLineageForOutput('output://file.mp4');
+    expect(retrieved).toBeDefined();
+    expect(retrieved!.lineage_id).toBe(lineage.lineage_id);
+    expect(retrieved!.source_chain.length).toBe(5);
 
-  // Only editorial, no source
-  const lineage2 = tracker.buildLineage(RENDER_JOB, ['ed-001'], []);
-  console.assert(lineage2.complete === false, 'FAIL: chain without source media should be incomplete');
-  console.log('PASS: test_incompleteChain');
-})();
-
-// Test 5: Get lineage for output
-(function test_getLineageForOutput() {
-  const tracker = setup();
-
-  const lineage = tracker.buildLineage(
-    RENDER_JOB,
-    ['ed-001'],
-    ['media-001'],
-  );
-
-  const retrieved = tracker.getLineageForOutput('output://file.mp4');
-  console.assert(retrieved !== undefined, 'FAIL: should find lineage');
-  console.assert(retrieved!.lineage_id === lineage.lineage_id, 'FAIL: lineage_id should match');
-  console.assert(retrieved!.source_chain.length === 5, 'FAIL: chain length should match');
-
-  // Non-existent output
-  const notFound = tracker.getLineageForOutput('output://nonexistent.mp4');
-  console.assert(notFound === undefined, 'FAIL: should return undefined for unknown output');
-  console.log('PASS: test_getLineageForOutput');
-})();
-
-console.log('\n=== output-lineage-tracker: All 5 tests passed ===');
+    // Non-existent output
+    const notFound = tracker.getLineageForOutput('output://nonexistent.mp4');
+    expect(notFound).toBeUndefined();
+  });
+});
